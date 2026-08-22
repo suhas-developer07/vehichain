@@ -86,6 +86,12 @@ npx hardhat test
 npx hardhat run scripts/deploy.js --network ganache
 ```
 
+```bash
+npx hardhat compile
+npx ganache --port 7545 --chain.chainId 1337 --wallet.deterministic
+npx hardhat run scripts/deploy.js --network ganache
+```
+
 This automatically:
 - Deploys VehicleRegistry to Ganache
 - Updates `.env` with CONTRACT_ADDRESS
