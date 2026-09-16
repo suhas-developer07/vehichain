@@ -60,6 +60,9 @@ contract VehicleRegistry {
     }
 
     // --- Vehicle Registration ---
+    // Gas optimization: `vin` is the mapping key, so we do NOT persist a second
+    // copy of it in the Vehicle struct (~20k gas saved per registration).
+    // The field stays in the struct/ABI for consumers; getVehicle() reconstructs it.
     function registerVehicle(
         string calldata _vin,
         string calldata _make,
@@ -70,7 +73,7 @@ contract VehicleRegistry {
         require(!vehicles[_vin].exists, "VIN already registered");
 
         vehicles[_vin] = Vehicle({
-            vin: _vin,
+            vin: "", // reconstructed in getVehicle(); not persisted
             make: _make,
             model: _model,
             year: _year,
@@ -139,11 +142,36 @@ contract VehicleRegistry {
     // --- View Functions ---
     function getVehicle(string calldata _vin) external view returns (Vehicle memory) {
         require(vehicles[_vin].exists, "Vehicle not found");
-        return vehicles[_vin];
+        Vehicle memory v = vehicles[_vin];
+        v.vin = _vin; // VIN is the mapping key — rebuild it for consumers
+        return v;
     }
 
     function getHistory(string calldata _vin) external view returns (Record[] memory) {
         return vehicleHistory[_vin];
+    }
+
+    /// @notice Cheap constant-gas read of a vehicle's history length.
+    function getHistoryCount(string calldata _vin) external view returns (uint256) {
+        return vehicleHistory[_vin].length;
+    }
+
+    /// @notice Bounded history read — keeps gas/latency flat no matter how long
+    ///         the vehicle's history grows (unlike getHistory which is O(n)).
+    function getHistoryPaged(
+        string calldata _vin,
+        uint256 _offset,
+        uint256 _limit
+    ) external view returns (Record[] memory page) {
+        Record[] storage history = vehicleHistory[_vin];
+        uint256 total = history.length;
+        if (_offset >= total) return new Record[](0);
+        uint256 end = _offset + _limit;
+        if (end > total) end = total;
+        page = new Record[](end - _offset);
+        for (uint256 i = _offset; i < end; i++) {
+            page[i - _offset] = history[i];
+        }
     }
 
     function getMyRole() external view returns (Role) {
