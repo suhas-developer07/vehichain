@@ -158,6 +158,9 @@ graph TB
 | Mongoose | 8.5 | MongoDB ODM |
 | ethers.js | 6.17 | Blockchain interaction |
 | dotenv | 16.4 | Environment config |
+| multer | 2.x | Vehicle photo multipart uploads |
+| pdfkit | 0.15 | Server-side passport PDF generation |
+| qrcode | 1.5 | QR codes for public passports |
 
 ### Blockchain
 
@@ -508,17 +511,24 @@ graph TB
     Router --> Navbar["🔝 Navbar"]
     Router --> Routes["📄 Routes"]
 
-    Navbar --> NavLinks["🔗 NavLinks\nHistory · Register\nAdd Record · Transfer · Admin"]
+    Navbar --> NavLinks["🔗 NavLinks\nHistory · Dashboard · Buyer Check\nRegister · Add Record · Transfer · Admin"]
     Navbar --> RoleBadge["🎭 RoleBadge\ncurrent role display"]
     Navbar --> ConnectWallet["🔐 ConnectWalletButton"]
 
     Routes --> VH["🏠 VehicleHistory\n/ and /vehicle/:vin"]
+    Routes --> DB["📊 Dashboard\n/dashboard"]
+    Routes --> PP["🪪 Passport\n/passport/:vin"]
+    Routes --> DD["🧭 Buyer Due Diligence\n/due-diligence/:vin"]
     Routes --> RV["📝 RegisterVehicle\n/register"]
     Routes --> AR["📋 AddRecord\n/add-record"]
     Routes --> TO["🔄 TransferOwnership\n/transfer"]
     Routes --> Admin["⚙️ AdminRoles\n/admin"]
 
     VH --> RC["🃏 RecordCard\n(reusable component)"]
+    VH --> TSC["🛡️ TrustScoreCard\ntrust gauge + fraud radar"]
+    PP --> TSC
+    DD --> TSC
+    Admin --> WLP["🚩 WatchlistPanel\nadmin-signed flags"]
 
     App --> UseWallet["🎣 useWallet Hook\n(account, role, contract\nconnect, provider, signer)"]
 
@@ -622,7 +632,17 @@ flowchart LR
     registeredAt: Date,       // Registration timestamp
     lastUpdatedAt: Date,      // Last modification timestamp
     recordCount: Number,      // Number of records (denormalized)
-    status: String            // "active", "transferred", etc.
+    status: String,           // "active", "transferred", etc.
+    photoUrl: String,         // Public URL: /uploads/vehicles/<file>
+    photoHash: String,        // SHA-256 of the image bytes
+    photoMimeType: String,    // image/jpeg | image/png | image/webp | image/gif
+    photoSize: Number,        // Bytes
+    photoUploadedAt: Date,    // Upload timestamp
+    photoUploadedBy: String,  // Owner wallet that signed the upload
+    trustScore: Number,       // Cached 0-100 trust score (best-effort)
+    trustGrade: String,       // A+ | A | B | C | D | E
+    riskLevel: String,        // LOW | MEDIUM | HIGH | CRITICAL
+    trustUpdatedAt: Date      // Last time the trust score was refreshed
 }
 ```
 
@@ -644,6 +664,26 @@ flowchart LR
 ```
 
 **Indexes:** `vin`, `recordType`, `timestamp`, `txHash`
+
+#### WatchlistEntry Collection
+
+```javascript
+{
+    vin: String,              // Uppercase VIN (optional)
+    owner: String,            // Lowercase wallet address (optional)
+    reason: String,           // Why the VIN/owner is flagged
+    severity: String,         // "low" | "medium" | "high" | "critical"
+    active: Boolean,          // False once resolved
+    addedBy: String,          // Contract-admin wallet that signed the write
+    createdAt: Date,
+    resolvedAt: Date,
+    resolvedBy: String        // Contract-admin wallet that signed the resolve
+}
+```
+
+**Indexes:** `vin`, `owner`, `active`
+
+Every write requires a fresh EIP-191 signature from the contract admin; reads are public.
 
 ### Entity Relationship Diagram
 
@@ -667,6 +707,14 @@ erDiagram
         date timestamp "When recorded"
         string txHash "Blockchain transaction hash"
         int blockNumber "Block number on chain"
+    }
+    WatchlistEntry {
+        string vin "Optional flagged VIN"
+        string owner "Optional flagged wallet"
+        string reason "Flag reason"
+        string severity "low · medium · high · critical"
+        boolean active "Resolved or active"
+        string addedBy "Admin wallet"
     }
 ```
 
@@ -927,6 +975,89 @@ flowchart LR
 | **Latency** | Near real-time (< 1 second) |
 | **Purpose** | Enables fast search/list queries without blockchain reads |
 
+### Feature 7: Vehicle Photo Upload & Retrieval
+
+| Aspect | Detail |
+|--------|--------|
+| **Description** | Each vehicle has a photo stored off-chain and linked to its VIN |
+| **Required At** | Registration (UI enforces a photo before registering) |
+| **Storage** | `uploads/vehicles/` at the project root, served at `/uploads/vehicles/<file>` |
+| **Formats / Limit** | JPEG, PNG, WebP, GIF — max 5 MB |
+| **Authorization** | Current owner signs a short-lived message; backend verifies against on-chain owner |
+| **Integrity** | Signature covers the image SHA-256; hash is re-computed from received bytes and stored in MongoDB |
+| **Retrieval** | `GET /api/vehicles/:vin` returns `photoUrl`, `photoHash`, and upload metadata |
+| **Replacement** | Owner can upload a new photo from the History page; old file is deleted |
+
+---
+
+### Feature 8: Trust Score & Fraud Radar
+
+| Aspect | Detail |
+|--------|--------|
+| **Description** | Every vehicle receives an explainable 0-100 trust score and a set of fraud indicators |
+| **Inputs** | Live on-chain vehicle + history, off-chain photo metadata, indexed status |
+| **Positive signals** | History depth, evidence anchoring, service/inspection/insurance records, verified photo, recent activity, established registration |
+| **Risk signals** | Accident disclosures, missing post-accident inspection, ownership churn/rapid flipping, duplicates, stale history, weak evidence, missing photo, suspicious status |
+| **Output** | Score, grade (A+ to E), risk level, factor breakdown, severity-ranked fraud flags, summary |
+| **Transparency** | Each factor includes a signed point impact and detail; each flag includes severity, title, and explanation |
+| **Caching** | `trustScore`, `trustGrade`, `riskLevel`, and `trustUpdatedAt` are written back to `VehicleIndex` best-effort for analytics |
+| **Endpoints** | `GET /api/vehicles/:vin/trust` (also embedded in vehicle detail) |
+| **UI** | `TrustScoreCard` used on the vehicle history page and public passport |
+
+### Feature 9: Public Vehicle Passport with QR + PDF
+
+| Aspect | Detail |
+|--------|--------|
+| **Description** | Shareable, printable passport summarizing vehicle identity, history, and trust |
+| **Public page** | `/passport/:vin` — no wallet required |
+| **JSON API** | `GET /api/vehicles/:vin/passport` |
+| **PDF API** | `GET /api/vehicles/:vin/passport.pdf` |
+| **QR code** | Encodes `${PUBLIC_APP_URL}/passport/:vin` |
+| **Document fingerprint** | Stable SHA-256 over VIN, identity, history, photo hash, and trust score (excludes generation time) |
+| **PDF contents** | Photo, identity facts, trust gauge, fraud radar, full paginated history, QR, fingerprint |
+| **PDF engine** | `pdfkit` (server-side, in-memory buffer) |
+
+### Feature 10: Live Registry Dashboard
+
+| Aspect | Detail |
+|--------|--------|
+| **Description** | Operational view of registry health and recent activity |
+| **Frontend** | `/dashboard`, polling every 8 seconds with pause/refresh controls |
+| **Summary endpoint** | `GET /api/analytics/summary` |
+| **Activity endpoint** | `GET /api/analytics/activity?limit=24` |
+| **KPIs** | Vehicle, record, photo, owner, suspicious, and average trust totals |
+| **Charts** | 14-day activity, trust-risk distribution, records by type, top makes |
+| **Feed** | Merged registrations, record writes, and photo updates with risk chips |
+| **Data source** | MongoDB index (fast); chain remains authoritative for any individual vehicle |
+
+### Feature 11: Buyer Due Diligence
+
+| Aspect | Detail |
+|--------|--------|
+| **Description** | Pre-purchase verdict built from live chain history, ownership events, photo integrity, trust score, and the watchlist |
+| **Public page** | `/due-diligence` and `/due-diligence/:vin` — no wallet required |
+| **Report API** | `GET /api/due-diligence/:vin` |
+| **PDF API** | `GET /api/due-diligence/:vin/report.pdf` |
+| **Comparison API** | `GET /api/due-diligence/compare?vins=VIN1,VIN2` |
+| **Checks** | 12 explicit checks: registration, ownership trail, accidents, service, inspection, insurance, evidence anchoring, photo integrity, record freshness, duplicates, registry status, watchlist |
+| **Verdicts** | BUY (cleared to buy) · CAUTION (proceed with caution) · AVOID (do not buy) |
+| **Blocking signals** | Suspicious status, critical/high watchlist match, critical trust risk, a critical failed check, or 3+ failed checks |
+| **Ownership timeline** | `VehicleRegistered` / `OwnershipTransferred` events with from → to addresses; falls back to transfer records |
+| **Report identity** | Stable SHA-256 over canonical VIN, verdict, check statuses, watchlist matches, trust score, ownership entries |
+| **PDF contents** | Verdict, trust score, identity + photo, red flags, checklist, ownership timeline, QR, fingerprint |
+| **PDF engine** | `pdfkit` (server-side, in-memory buffer) |
+
+### Feature 12: Admin Watchlist
+
+| Aspect | Detail |
+|--------|--------|
+| **Description** | Internal list of flagged VINs and owner wallets surfaced in buyer reports |
+| **Write authorization** | EIP-191 signature from the contract admin wallet, verified server-side against `contract.admin()` |
+| **Entry fields** | `vin?`, `owner?`, `reason`, `severity`, `active`, audit timestamps and signer |
+| **Endpoints** | `GET /api/watchlist`, `POST /api/watchlist`, `POST /api/watchlist/:id/resolve` |
+| **UI** | `WatchlistPanel` on the Admin page (add + resolve) |
+| **Effect** | A high/critical active match flips the due-diligence verdict to AVOID |
+
 ---
 
 ## 12. Security Model
@@ -941,7 +1072,10 @@ flowchart LR
 | **Data tampering** | Blockchain immutability — records can't be modified |
 | **Private key compromise** | MetaMask manages keys; private keys never leave the browser |
 | **Replay attacks** | Each transaction has a unique nonce |
-| **Frontend manipulation** | All writes go through MetaMask signing; backend only reads |
+| **Frontend manipulation** | All writes go through MetaMask signing; backend only reads chain state |
+| **Forged watchlist entries** | Watchlist writes require a fresh EIP-191 signature verified against `contract.admin()` |
+| **Watchlist replay** | Signed timestamps must be within a 10-minute window |
+| **Spoofed due-diligence verdict** | Checks are computed server-side from chain data; the report carries a stable SHA-256 fingerprint |
 
 ### Trust Boundaries
 
@@ -1026,9 +1160,134 @@ GET /api/vehicles/:vin
             "timestamp": "2024-01-15T10:30:00.000Z"
         }
     ],
-    "recordCount": 1
+    "recordCount": 1,
+    "registeredAt": "2024-01-15T10:00:00.000Z",
+    "photoUrl": "/uploads/vehicles/VIN1001-1736937600000-a1b2c3d4.jpg",
+    "photoHash": "881ffbcaafc212e49addad08846a5b82761355fa20624253af3477ba33262c5c",
+    "photoUploadedAt": "2024-01-15T10:02:00.000Z",
+    "photoUploadedBy": "0x90F8bf6A479f320ead074411a4B0e7944Ea8c9C1",
+    "trust": {
+        "score": 82,
+        "grade": "A",
+        "riskLevel": "LOW",
+        "factors": [
+            { "label": "History depth", "impact": 10, "tone": "positive" }
+        ],
+        "flags": []
+    },
+    "passportUrl": "http://localhost:5173/passport/VIN1001"
 }
 ```
+
+### Get Vehicle Trust Score
+
+```
+GET /api/vehicles/:vin/trust
+```
+
+Returns the same `trust` object embedded in vehicle detail, including every score factor and
+fraud flag with severity and explanation.
+
+### Get Public Vehicle Passport
+
+```
+GET /api/vehicles/:vin/passport
+```
+
+Returns vehicle identity, photo URL/hash, full history, trust score, fraud flags, a stable
+`documentHash`, a public `passportUrl`, and a `qrDataUrl` PNG for the public passport page.
+
+### Download Vehicle Passport PDF
+
+```
+GET /api/vehicles/:vin/passport.pdf
+```
+
+Streams a printable A4 PDF with the vehicle photo, identity facts, trust gauge, fraud radar,
+full history table, QR code, and document fingerprint. `Content-Disposition` is set to an
+attachment named `vehicle-passport-<vin>.pdf`.
+
+### Get Buyer Due-Diligence Report
+
+```
+GET /api/due-diligence/:vin
+```
+
+Returns the vehicle identity, a `verdict` (`BUY` / `CAUTION` / `AVOID` with label, headline,
+summary, and reasons), the embedded `trust` object, all 12 `checks` with `pass`/`warn`/`fail`
+status and detail, a `scorecard`, the `ownership` timeline, `watchlist` matches, severity-ranked
+`alerts`, the report SHA-256, and a `shareUrl`.
+
+### Download Buyer Due-Diligence PDF
+
+```
+GET /api/due-diligence/:vin/report.pdf
+```
+
+Streams a printable A4 PDF with the verdict, trust score, vehicle identity + photo, red flags,
+checklist, ownership timeline, QR code, and report fingerprint. `Content-Disposition` is set to
+an attachment named `due-diligence-<vin>.pdf`.
+
+### Compare Two Vehicles
+
+```
+GET /api/due-diligence/compare?vins=VIN1,VIN2
+```
+
+Requires exactly two distinct VINs. Returns a compact summary for each vehicle and a
+`comparison` object with `winner` (VIN or `null`), `tie`, verdict ranks, `trustDelta`, and
+`failedDelta`. The winner is chosen by verdict rank, then trust score, then fewer failed checks.
+
+### List Watchlist Entries
+
+```
+GET /api/watchlist?includeResolved=true&vin=VIN1001&owner=0x...
+```
+
+**Query Parameters:** `includeResolved`, `vin`, `owner` (all optional)
+
+### Add Watchlist Entry
+
+```
+POST /api/watchlist
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `vin` | String | Optional VIN to flag |
+| `owner` | String | Optional wallet address to flag |
+| `reason` | String | 3–500 character explanation |
+| `severity` | String | `low` / `medium` / `high` / `critical` |
+| `signature` | String | EIP-191 signature from the contract admin wallet |
+| `timestamp` | String | Milliseconds used in the signed message (10-minute window) |
+
+At least one of `vin` or `owner` is required. The signed message is:
+
+```
+Watchlist entry
+VIN: <vin or ->
+Owner: <owner or ->
+Reason: <reason>
+Severity: <severity>
+Timestamp: <timestamp>
+```
+
+### Resolve Watchlist Entry
+
+```
+POST /api/watchlist/:id/resolve
+```
+
+Body: `{ signature, timestamp }`. The admin signs:
+
+```
+Watchlist resolve
+ID: <id>
+Timestamp: <timestamp>
+```
+
+A resolved entry stays in MongoDB with `active: false` for audit purposes and no longer affects
+due-diligence verdicts.
 
 ### List Vehicles
 
@@ -1037,6 +1296,44 @@ GET /api/vehicles?make=Toyota&model=Camry&owner=0x...
 ```
 
 **Query Parameters:** `make`, `model`, `owner`, `status` (all optional)
+
+### Upload or Replace Vehicle Photo
+
+```
+POST /api/vehicles/:vin/photo
+Content-Type: multipart/form-data
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `photo` | File | JPEG/PNG/WebP/GIF, max 5 MB |
+| `signature` | String | Wallet signature of the canonical message |
+| `timestamp` | String | Milliseconds used in the signed message |
+| `fileHash` | String | SHA-256 of the image (included in the signed message) |
+
+The signed message is:
+
+```
+Vehicle photo upload
+VIN: <vin>
+File SHA-256: <fileHash>
+Timestamp: <timestamp>
+```
+
+The backend verifies the signer is the current on-chain owner, validates the image bytes,
+stores the file under `uploads/vehicles/`, and responds with:
+
+```json
+{
+    "vin": "VIN1001",
+    "photoUrl": "/uploads/vehicles/VIN1001-1736937600000-a1b2c3d4.jpg",
+    "photoHash": "881ffbcaafc212e49addad08846a5b82761355fa20624253af3477ba33262c5c",
+    "photoMimeType": "image/jpeg",
+    "photoSize": 13057,
+    "photoUploadedAt": "2024-01-15T10:02:00.000Z",
+    "uploadedBy": "0x90F8bf6A479f320ead074411a4B0e7944Ea8c9C1"
+}
+```
 
 ### Get Vehicle Records
 
@@ -1050,6 +1347,24 @@ GET /api/vehicles/:vin/records
 GET /api/records/recent?limit=20
 ```
 
+### Get Analytics Summary
+
+```
+GET /api/analytics/summary
+```
+
+Returns registry totals, average trust score, trust-risk distribution, records by type,
+14 days of daily activity, top makes, and recently indexed vehicles.
+
+### Get Activity Feed
+
+```
+GET /api/analytics/activity?limit=24
+```
+
+Merges registrations, record writes, and photo updates into a single time-ordered feed with
+vehicle identity, actor wallet, timestamp, and cached risk level.
+
 ### API Route Flow
 
 ```mermaid
@@ -1060,6 +1375,9 @@ flowchart TD
     B -->|"/api/vehicles"| E["listVehicles()\nRead from MongoDB"]
     B -->|"/api/vehicles/:vin/records"| F["getVehicleRecords()\nRead from MongoDB"]
     B -->|"/api/records/recent"| G["getRecentRecords()\nRead from MongoDB"]
+    B -->|"/api/due-diligence/:vin"| Q["getDueDiligenceReport()\nBuild verdict + timeline"]
+    B -->|"/api/due-diligence/compare"| R["compareDueDiligence()\nTwo reports + winner"]
+    B -->|"/api/watchlist"| S["listWatchlist()\nMongo + admin-signed writes"]
 
     C --> H["⛓️ contract.admin()"]
     C --> I["🗄️ mongoose.readyState"]
@@ -1068,6 +1386,8 @@ flowchart TD
     E --> L["🗄️ VehicleIndex.find(filter)"]
     F --> M["🗄️ RecordIndex.find({vin})"]
     G --> N["🗄️ RecordIndex.find().sort().limit()"]
+    Q --> O["🗄️ WatchlistEntry.find({active})"]
+    Q --> P["⛓️ queryFilter(ownership events)"]
 
     style C fill:#27ae60,color:#fff
     style D fill:#e94560,color:#fff
@@ -1240,10 +1560,10 @@ flowchart LR
 
 | Enhancement | Description | Priority |
 |-------------|-------------|----------|
-| IPFS document storage | Store service invoices, accident photos on IPFS with on-chain hashes | High |
+| IPFS document storage | Move vehicle photos and service invoices to IPFS, anchor hashes on-chain | High |
 | NFT ownership certificates | Mint NFTs as proof of vehicle ownership | Medium |
-| AI/ML fraud detection | Analyze record patterns for suspicious activity | Medium |
-| Mobile app | QR code scanning for instant vehicle lookup | High |
+| AI/ML fraud detection | Layer ML anomaly detection on top of the current explainable rule engine | Medium |
+| Mobile app | QR code scanning for instant vehicle passport lookup | High |
 | GPS/IoT integration | Real-time vehicle tracking data on-chain | Low |
 | Cross-chain interoperability | Support multiple blockchains | Low |
 | Government portal integration | Official API for registration authorities | Medium |

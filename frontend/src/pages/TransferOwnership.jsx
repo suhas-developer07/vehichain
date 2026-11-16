@@ -1,5 +1,12 @@
 import { useState } from "react";
 import { getVehicle } from "../api/client.js";
+import Icon from "../components/Icon.jsx";
+import PageHeader from "../components/PageHeader.jsx";
+
+function shortAddress(address) {
+  if (!address) return "Unknown";
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
 
 export default function TransferOwnership({ contract, account }) {
   const [vin, setVin] = useState("");
@@ -58,96 +65,209 @@ export default function TransferOwnership({ contract, account }) {
   if (!account) {
     return (
       <div className="page">
-        <h1>🔄 Transfer Ownership</h1>
-        <p className="warning-msg">Please connect your wallet to transfer ownership.</p>
+        <PageHeader
+          eyebrow="Operate · Hand-off"
+          title="Transfer ownership"
+          description="Move a vehicle to a new owner wallet. Verify the vehicle first, then sign the hand-off."
+        />
+        <div className="state-panel">
+          <span className="state-icon">
+            <Icon name="wallet" size={22} />
+          </span>
+          <h2>Connect your wallet to continue</h2>
+          <p>
+            Ownership transfers are signed by the current owner. Connect
+            MetaMask from the top bar to get started.
+          </p>
+        </div>
       </div>
     );
   }
 
+  const statusTone =
+    status === "confirmed" ? "confirmed" : status === "failed" ? "failed" : "pending";
+
   return (
     <div className="page">
-      <h1>🔄 Transfer Ownership</h1>
-      <p className="page-desc">
-        Transfer vehicle ownership to another wallet address.
-      </p>
+      <PageHeader
+        eyebrow="Operate · Hand-off"
+        title="Transfer ownership"
+        description="Move a vehicle to a new owner wallet. Verify the vehicle first, then sign the irreversible hand-off."
+        meta={
+          <span className="meta-item">
+            <Icon name="alert" size={13} />
+            Ownership changes cannot be undone
+          </span>
+        }
+      />
 
-      <div className="form">
-        <div className="form-group">
-          <label>VIN *</label>
-          <div className="input-group">
-            <input
-              type="text"
-              value={vin}
-              onChange={(e) => setVin(e.target.value)}
-              placeholder="Vehicle Identification Number"
-            />
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={checkOwnership}
-              disabled={checking}
-            >
-              {checking ? "Checking..." : "Check"}
-            </button>
-          </div>
-        </div>
-
-        {vehicle && (
-          <div className="ownership-info">
-            <p>
-              <strong>Current Owner:</strong>{" "}
-              <span title={vehicle.currentOwner}>
-                {vehicle.currentOwner?.slice(0, 6)}...{vehicle.currentOwner?.slice(-4)}
-              </span>
-            </p>
-            {isOwner ? (
-              <p className="success-msg">✅ You are the current owner</p>
-            ) : (
-              <p className="warning-msg">⚠️ You are not the current owner of this vehicle</p>
-            )}
-          </div>
-        )}
-
-        {vehicle && isOwner && (
-          <form onSubmit={handleSubmit}>
-            <div className="form-group">
-              <label>New Owner Address *</label>
-              <input
-                type="text"
-                value={newOwner}
-                onChange={(e) => setNewOwner(e.target.value)}
-                placeholder="0x..."
-                required
-              />
+      <div className="form-layout">
+        <div className="form-card">
+          <section className="form-section">
+            <div className="form-section-head">
+              <span className="step-badge">01</span>
+              <div>
+                <h2>Verify the vehicle</h2>
+                <p>Look up the VIN and confirm you are the current owner.</p>
+              </div>
             </div>
 
-            <button
-              type="submit"
-              className="btn btn-primary"
-              disabled={status === "confirming" || status === "pending"}
-            >
-              {status === "confirming"
-                ? "Confirm in MetaMask..."
-                : status === "pending"
-                ? "Pending..."
-                : "Transfer Ownership"}
-            </button>
-          </form>
-        )}
+            <div className="form-group">
+              <label htmlFor="transfer-vin">VIN *</label>
+              <div className="input-group">
+                <input
+                  id="transfer-vin"
+                  type="text"
+                  value={vin}
+                  onChange={(e) => setVin(e.target.value)}
+                  placeholder="Vehicle Identification Number"
+                  autoComplete="off"
+                />
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={checkOwnership}
+                  disabled={checking}
+                >
+                  {checking ? "Checking…" : "Verify"}
+                </button>
+              </div>
+            </div>
+
+            {vehicle && (
+              <div
+                className={`verify-banner ${
+                  isOwner ? "is-owner" : "is-not-owner"
+                }`}
+              >
+                <span className="verify-icon">
+                  <Icon name={isOwner ? "check" : "alert"} size={18} />
+                </span>
+                <div>
+                  <strong>
+                    {isOwner
+                      ? "You are the current owner"
+                      : "This vehicle belongs to another wallet"}
+                  </strong>
+                  <p>
+                    {vehicle.year} {vehicle.make} {vehicle.model} · current owner{" "}
+                    <code title={vehicle.currentOwner}>
+                      {shortAddress(vehicle.currentOwner)}
+                    </code>
+                  </p>
+                </div>
+              </div>
+            )}
+          </section>
+
+          {vehicle && isOwner && (
+            <form onSubmit={handleSubmit} className="form-section transfer-form">
+              <div className="form-section-head">
+                <span className="step-badge">02</span>
+                <div>
+                  <h2>New owner</h2>
+                  <p>Enter the wallet address that will receive this vehicle.</p>
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="new-owner">New owner address *</label>
+                <input
+                  id="new-owner"
+                  type="text"
+                  value={newOwner}
+                  onChange={(e) => setNewOwner(e.target.value)}
+                  placeholder="0x…"
+                  className="mono-input"
+                  autoComplete="off"
+                  required
+                />
+                <p className="field-hint">
+                  Double-check the address — a transfer cannot be reversed by
+                  the registry.
+                </p>
+              </div>
+
+              <div className="form-actions">
+                <button
+                  type="submit"
+                  className="btn btn-danger btn-lg"
+                  disabled={status === "confirming" || status === "pending"}
+                >
+                  {status === "confirming"
+                    ? "Confirm in MetaMask…"
+                    : status === "pending"
+                      ? "Transferring…"
+                      : "Transfer ownership"}
+                </button>
+                <span className="form-actions-note">
+                  <Icon name="alert" size={13} />
+                  Cannot be undone
+                </span>
+              </div>
+            </form>
+          )}
+        </div>
+
+        <aside className="form-aside">
+          <section className="side-card">
+            <span className="eyebrow">Before you transfer</span>
+            <h3>Checklist</h3>
+            <ul className="side-list">
+              <li>
+                <Icon name="check" size={14} />
+                Payment or agreement is settled
+              </li>
+              <li>
+                <Icon name="check" size={14} />
+                The buyer address is correct
+              </li>
+              <li>
+                <Icon name="check" size={14} />
+                The buyer understands the vehicle&apos;s history
+              </li>
+            </ul>
+          </section>
+
+          <section className="side-card side-card-quiet">
+            <span className="eyebrow">What changes</span>
+            <p className="side-card-lede">
+              The new address becomes the on-chain owner and gains photo-upload
+              rights. All history stays attached to the vehicle.
+            </p>
+          </section>
+        </aside>
       </div>
 
+      {errorMsg && status !== "failed" && (
+        <div className="error-msg">{errorMsg}</div>
+      )}
+
       {txHash && (
-        <div className={`status-msg ${status}`}>
-          <p>
-            <strong>Status:</strong>{" "}
-            {status === "pending" && `Pending (tx: ${txHash.slice(0, 10)}...)`}
-            {status === "confirmed" && `Confirmed! Ownership transferred.`}
-            {status === "failed" && `Failed: ${errorMsg}`}
-          </p>
+        <div className={`status-msg ${statusTone}`}>
+          <span className="status-msg-icon">
+            {statusTone === "confirmed" ? (
+              <Icon name="check" size={17} />
+            ) : statusTone === "failed" ? (
+              <Icon name="alert" size={17} />
+            ) : (
+              <span className="spinner" aria-hidden="true" />
+            )}
+          </span>
+          <div>
+            <strong>Transfer status</strong>
+            <p>
+              {status === "pending" && "Transfer is pending confirmation."}
+              {status === "confirmed" &&
+                "Confirmed. Ownership has moved to the new wallet."}
+              {status === "failed" && `Failed: ${errorMsg}`}
+            </p>
+            <span className="status-tx mono-line">tx {txHash.slice(0, 20)}…</span>
+          </div>
         </div>
       )}
 
-      {status === "failed" && errorMsg && (
+      {status === "failed" && errorMsg && !txHash && (
         <div className="error-msg">{errorMsg}</div>
       )}
     </div>

@@ -1,23 +1,43 @@
-export default function ConnectWalletButton({ account, connect, wrongNetwork }) {
+import Icon from "./Icon.jsx";
+
+export default function ConnectWalletButton({
+  account,
+  connect,
+  wrongNetwork,
+  chainId = 1337,
+}) {
   if (wrongNetwork) {
     return (
-      <button className="connect-btn wrong-network" disabled>
-        Wrong Network — Switch to Chain {1337}
+      <button
+        type="button"
+        className="connect-btn wrong-network"
+        disabled
+        title={`Switch MetaMask to chain ${chainId}`}
+      >
+        <Icon name="alert" size={15} />
+        <span>Wrong network</span>
       </button>
     );
   }
 
   if (account) {
     return (
-      <button className="connect-btn connected" disabled>
-        {account.slice(0, 6)}...{account.slice(-4)}
-      </button>
+      <span className="wallet-chip" title={account}>
+        <span className="wallet-pulse" aria-hidden="true" />
+        <span className="wallet-copy">
+          <span className="wallet-label">Connected</span>
+          <strong className="wallet-address">
+            {account.slice(0, 6)}…{account.slice(-4)}
+          </strong>
+        </span>
+      </span>
     );
   }
 
   return (
-    <button className="connect-btn" onClick={connect}>
-      Connect MetaMask
+    <button type="button" className="connect-btn" onClick={connect}>
+      <Icon name="wallet" size={16} />
+      <span>Connect wallet</span>
     </button>
   );
 }

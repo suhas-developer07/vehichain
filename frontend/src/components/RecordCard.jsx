@@ -1,48 +1,75 @@
-const RECORD_TYPE_LABELS = {
-  SERVICE: "🔧 Service",
-  ACCIDENT: "💥 Accident",
-  INSURANCE: "🛡️ Insurance",
-  OWNERSHIP_TRANSFER: "🔄 Ownership Transfer",
-  INSPECTION: "🔍 Inspection",
+import Icon from "./Icon.jsx";
+
+const RECORD_META = {
+  SERVICE: { label: "Service", icon: "wrench", tone: "success" },
+  ACCIDENT: { label: "Accident", icon: "alert", tone: "danger" },
+  INSURANCE: { label: "Insurance", icon: "shield", tone: "warning" },
+  OWNERSHIP_TRANSFER: {
+    label: "Ownership transfer",
+    icon: "transfer",
+    tone: "info",
+  },
+  INSPECTION: { label: "Inspection", icon: "search", tone: "accent" },
 };
 
-const RECORD_TYPE_COLORS = {
-  SERVICE: "#28a745",
-  ACCIDENT: "#dc3545",
-  INSURANCE: "#fd7e14",
-  OWNERSHIP_TRANSFER: "#007bff",
-  INSPECTION: "#6f42c1",
-};
+function formatDateTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Unknown date";
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 export default function RecordCard({ record }) {
-  const label = RECORD_TYPE_LABELS[record.recordType] || record.recordType;
-  const color = RECORD_TYPE_COLORS[record.recordType] || "#6c757d";
+  const meta = RECORD_META[record.recordType] || {
+    label: record.recordType,
+    icon: "file",
+    tone: "neutral",
+  };
 
   return (
-    <div className="record-card">
-      <div className="record-header">
-        <span className="record-type" style={{ borderColor: color, color }}>
-          {label}
+    <article className={`record-card tone-${meta.tone}`}>
+      <div className="record-rail" aria-hidden="true">
+        <span className="record-icon">
+          <Icon name={meta.icon} size={16} />
         </span>
-        <span className="record-date">
-          {new Date(record.timestamp).toLocaleDateString()}{" "}
-          {new Date(record.timestamp).toLocaleTimeString()}
-        </span>
+        <span className="record-line" />
       </div>
-      <div className="record-body">
-        <p>{record.description}</p>
-        {record.dataHash && (
-          <p className="record-hash">
-            <strong>Data Hash:</strong> {record.dataHash}
-          </p>
-        )}
-        <p className="record-by">
-          <strong>Recorded by:</strong>{" "}
-          <span title={record.recordedBy}>
-            {record.recordedBy?.slice(0, 6)}...{record.recordedBy?.slice(-4)}
+
+      <div className="record-panel">
+        <header className="record-header">
+          <span className="record-type">{meta.label}</span>
+          <span className="record-date">
+            <Icon name="clock" size={12} />
+            {formatDateTime(record.timestamp)}
           </span>
-        </p>
+        </header>
+
+        <p className="record-description">{record.description}</p>
+
+        <footer className="record-body">
+          {record.dataHash && (
+            <span className="record-hash" title={record.dataHash}>
+              <Icon name="fingerprint" size={12} />
+              <code>
+                {record.dataHash.length > 30
+                  ? `${record.dataHash.slice(0, 30)}…`
+                  : record.dataHash}
+              </code>
+            </span>
+          )}
+          <span className="record-by">
+            Recorded by{" "}
+            <strong title={record.recordedBy}>
+              {record.recordedBy?.slice(0, 6)}…{record.recordedBy?.slice(-4)}
+            </strong>
+          </span>
+        </footer>
       </div>
-    </div>
+    </article>
   );
 }

@@ -54,23 +54,28 @@ graph TB
         ConfigEnv["config/env.js — Loads .env"]
         ConfigContract["config/contract.js — Blockchain connection"]
         ConfigDB["config/db.js — MongoDB connection"]
+        ConfigPaths["config/paths.js — Upload folder paths"]
         ABI["config/abi.json — Contract ABI"]
         Models["models/ — Mongoose schemas"]
-        Controllers["controllers/ — Route handlers"]
-        Routes["routes/ — API routes"]
+        Controllers["controllers/ — Route handlers + photo upload + due diligence"]
+        Services["services/ — Trust scoring, passport + due-diligence PDF"]
+        Routes["routes/ — API routes incl. due-diligence & watchlist"]
         EventListener["listeners/eventListener.js — Chain → MongoDB sync"]
+        UploadMW["middleware/upload.js — Multer photo storage"]
         ErrorHandler["middleware/errorHandler.js"]
     end
 
     subgraph Frontend["🌐 Frontend (React + Vite)"]
-        ViteConfig["vite.config.js — Proxy /api → backend"]
+        ViteConfig["vite.config.js — Proxy /api + /uploads → backend"]
         App["App.jsx — Routing + wallet hook"]
         UseWallet["hooks/useWallet.js — MetaMask connection"]
         ContractConfig["contract/config.js — Contract address"]
         ContractABI["contract/abi.json — Contract ABI"]
         APIClient["api/client.js — Backend API calls"]
-        Components["components/ — Reusable UI"]
-        Pages["pages/ — 5 pages"]
+        PhotoUtil["utils/vehiclePhoto.js — Signed photo message"]
+        WatchUtil["utils/watchlist.js — Signed watchlist message"]
+        Components["components/ — Reusable UI (TrustScoreCard, WatchlistPanel)"]
+        Pages["pages/ — History, Dashboard, Passport, Due Diligence, writes"]
     end
 
     Root --> Backend
@@ -663,8 +668,17 @@ The backend runs on **port 4000**.
 | `config/db.js` | Connects to MongoDB Atlas |
 | `config/env.js` | Loads `.env` from root directory |
 | `listeners/eventListener.js` | Subscribes to blockchain events, syncs to MongoDB |
-| `controllers/vehicleController.js` | Handles vehicle API requests |
+| `controllers/vehicleController.js` | Vehicle detail, trust, passport, list |
 | `controllers/recordController.js` | Handles record API requests |
+| `controllers/analyticsController.js` | Dashboard summary + activity feed |
+| `controllers/dueDiligenceController.js` | Buyer report, comparison, report PDF |
+| `controllers/watchlistController.js` | Admin-signed watchlist CRUD |
+| `services/trustScore.js` | Explainable 0-100 score + fraud flags |
+| `services/passport.js` | Passport JSON, QR codes, and PDF generation |
+| `services/dueDiligence.js` | Verdict engine, 12 checks, timeline, comparison |
+| `services/dueDiligenceReport.js` | Buyer due-diligence PDF |
+| `utils/recordTypes.js` | Solidity enum ↔ string mapping |
+| `utils/watchlistMessage.js` | Canonical admin watchlist signing message |
 
 ### How the Backend Connects to Blockchain
 
@@ -711,11 +725,111 @@ The event listener:
 
 | Method | Route | Purpose |
 |--------|-------|---------|
-| GET | `/api/vehicles/:vin` | Full vehicle detail (reads from chain) |
+| GET | `/api/vehicles/:vin` | Full vehicle detail + photo metadata + trust (vehicle/history from chain) |
 | GET | `/api/vehicles` | List/search vehicles (reads from MongoDB) |
 | GET | `/api/vehicles/:vin/records` | Records for a VIN (reads from MongoDB) |
+| GET | `/api/vehicles/:vin/trust` | Explainable trust score + fraud flags |
+| GET | `/api/vehicles/:vin/passport` | Public passport JSON + QR data URL |
+| GET | `/api/vehicles/:vin/passport.pdf` | Printable A4 passport PDF |
+| POST | `/api/vehicles/:vin/photo` | Upload/replace photo (owner wallet signature required) |
+| GET | `/uploads/vehicles/:file` | Serve stored vehicle photo |
 | GET | `/api/records/recent` | Recent records (reads from MongoDB) |
+| GET | `/api/analytics/summary` | Registry KPIs + trust distribution + daily activity |
+| GET | `/api/analytics/activity` | Merged live feed (registrations, records, photos) |
+| GET | `/api/due-diligence/:vin` | Buyer verdict + 12 checks + alerts + ownership timeline |
+| GET | `/api/due-diligence/:vin/report.pdf` | Printable due-diligence PDF |
+| GET | `/api/due-diligence/compare` | Two-VIN comparison + recommended winner (`?vins=A,B`) |
+| GET | `/api/watchlist` | List active/resolved watchlist entries |
+| POST | `/api/watchlist` | Add a watchlist entry (admin wallet signature required) |
+| POST | `/api/watchlist/:id/resolve` | Resolve an entry (admin wallet signature required) |
 | GET | `/api/health` | Health check (chain + DB status) |
+
+### Vehicle Photo Storage
+
+Photos are stored under `uploads/vehicles/` at the project root (gitignored).
+`POST /api/vehicles/:vin/photo` accepts multipart form data:
+
+| Field | Meaning |
+|-------|---------|
+| `photo` | Image file (JPEG/PNG/WebP/GIF, max 5 MB) |
+| `signature` | `personal_sign` of the canonical message |
+| `timestamp` | Milliseconds used in the signed message (10-minute window) |
+| `fileHash` | SHA-256 of the image, included in the signed message |
+
+The canonical message is:
+
+```
+Vehicle photo upload
+VIN: <vin>
+File SHA-256: <fileHash>
+Timestamp: <timestamp>
+```
+
+The backend verifies the signer against the **current on-chain owner**, validates the image
+bytes, stores the file, and saves the URL + SHA-256 hash in `VehicleIndex`. The frontend
+signing helper lives in `frontend/src/utils/vehiclePhoto.js`; the backend counterpart lives in
+`backend/utils/photoMessage.js` — keep them in sync.
+
+### Trust Score, Passport & Analytics
+
+`services/trustScore.js` is a pure function over `{ vehicle, history, index }`. It returns:
+
+- `score` (0-100), `grade` (A+ to E), `riskLevel` (LOW to CRITICAL);
+- `factors[]` — every signed point impact with a human-readable reason;
+- `flags[]` — fraud indicators with severity, title, and detail;
+- `stats` — record counts, evidence coverage, transfers, accidents, photo verification.
+
+Edit the weights and thresholds in that file to tune the score. Keep the factors explainable:
+the UI renders them directly, and the passport PDF repeats the summary.
+
+`services/passport.js` builds a stable `documentHash` from VIN + identity + history + photo hash
++ trust score, then generates:
+
+- a QR code pointing at `${PUBLIC_APP_URL}/passport/:vin`;
+- a JSON passport via `GET /api/vehicles/:vin/passport`;
+- an in-memory A4 PDF via `GET /api/vehicles/:vin/passport.pdf` (photo, trust gauge, fraud
+  radar, paginated history table, QR, fingerprint).
+
+`controllers/analyticsController.js` uses MongoDB aggregations and merges registrations, record
+writes, and photo updates into one feed. The dashboard polls both endpoints every 8 seconds.
+
+Vehicle lookups also write a **best-effort** trust cache (`trustScore`, `trustGrade`,
+`riskLevel`, `trustUpdatedAt`) back to `VehicleIndex`, and upsert missing index rows with the
+chain's make/model/year/owner. This keeps the dashboard populated even for vehicles that were
+registered before the event listener was running. A failed cache write never fails a lookup.
+
+### Buyer Due Diligence & Watchlist
+
+`services/dueDiligence.js` is a pure function over the vehicle, formatted history, index row,
+trust score, ownership events, and watchlist matches. It returns:
+
+- `verdict` — `BUY`, `CAUTION`, or `AVOID`, with label, headline, summary, and up to four reasons;
+- `checks[]` — 12 explicit checks, each with `pass` / `warn` / `fail`, severity, and detail;
+- `scorecard` — total, passed, warnings, failed;
+- `ownership` — registration + transfer timeline with from/to addresses and transaction hashes;
+- `alerts[]` — severity-ranked watchlist and high/critical fraud flags;
+- `reportHash` — stable SHA-256 over canonical VIN, verdict, check statuses, watchlist matches,
+  trust score, and ownership entries.
+
+The verdict is computed by `buildVerdict`: a suspicious status, critical/high watchlist match,
+critical trust risk, critical failed check, or 3+ failures produce `AVOID`; any failure, 3+
+warnings, non-LOW trust risk, or score under 70 produces `CAUTION`; otherwise `BUY`.
+
+`controllers/dueDiligenceController.js` reads the vehicle from chain, builds the trust score,
+queries `VehicleRegistered` / `OwnershipTransferred` events for the timeline, matches active
+watchlist entries against the VIN and current owner, and reuses one `buildReport()` for the JSON,
+PDF, and comparison endpoints. `compareReports()` ranks the two vehicles by verdict, then trust
+score, then fewer failed checks.
+
+`services/dueDiligenceReport.js` renders the buyer PDF with `pdfkit`: verdict block, trust score,
+identity + photo, red flags, checklist, ownership timeline, QR code, and a per-page footer with
+the report fingerprint. It mirrors the passport design and stays entirely in memory.
+
+Watchlist writes go through `controllers/watchlistController.js`. The admin signs a canonical
+message from `frontend/src/utils/watchlist.js`; the backend rebuilds the identical message from
+`backend/utils/watchlistMessage.js`, verifies the signer against `contract.admin()`, and rejects
+timestamps older than 10 minutes. Keep the two message builders in sync. A resolved entry stays
+in MongoDB with `active: false` for audit purposes.
 
 ### Adding a New API Endpoint
 
@@ -803,7 +917,7 @@ The `contract` object is an ethers.js Contract instance connected to the user's 
 
 ### Proxy Configuration
 
-The Vite dev server proxies `/api` requests to the backend:
+The Vite dev server proxies `/api` and `/uploads` requests to the backend:
 
 ```javascript
 // vite.config.js
@@ -813,11 +927,15 @@ server: {
             target: "http://localhost:4000",
             changeOrigin: true,
         },
+        "/uploads": {
+            target: "http://localhost:4000",
+            changeOrigin: true,
+        },
     },
 },
 ```
 
-This means `fetch("/api/vehicles/VIN1001")` in the frontend is forwarded to `http://localhost:4000/api/vehicles/VIN1001`.
+This means `fetch("/api/vehicles/VIN1001")` in the frontend is forwarded to `http://localhost:4000/api/vehicles/VIN1001`, and vehicle photos load from `/uploads/vehicles/...`.
 
 ---
 
@@ -891,6 +1009,7 @@ All environment variables are in the root `.env` file:
 | `CONTRACT_ADDRESS` | Deployed contract address | Auto-set by deploy script |
 | `DEPLOYER_PRIVATE_KEY` | Private key for the admin account | `0x4f3edf...` |
 | `PORT` | Backend server port | `4000` |
+| `PUBLIC_APP_URL` | Public frontend origin used in QR codes and PDF footers (optional) | `http://localhost:5173` |
 | `MONGODB_URI` | MongoDB connection string | `mongodb+srv://...` |
 | `MONGODB_DB_NAME` | MongoDB database name | `vehicle_registry` |
 

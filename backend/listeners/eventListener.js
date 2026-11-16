@@ -1,8 +1,7 @@
 import { contract } from "../config/contract.js";
 import VehicleIndex from "../models/VehicleIndex.js";
 import RecordIndex from "../models/RecordIndex.js";
-
-const RECORD_TYPES = ["SERVICE", "ACCIDENT", "INSURANCE", "OWNERSHIP_TRANSFER", "INSPECTION"];
+import { RECORD_TYPES } from "../utils/recordTypes.js";
 
 /**
  * Event listener that keeps MongoDB in sync with on-chain events.
@@ -16,16 +15,33 @@ export function startEventListener() {
   contract.on("VehicleRegistered", async (vin, owner, timestamp, event) => {
     try {
       console.log(`[Event] VehicleRegistered: ${vin} by ${owner}`);
+
+      // The event only carries the owner. Read the full vehicle from chain so
+      // MongoDB gets make/model/year for search and listing.
+      let vehicle = null;
+      try {
+        vehicle = await contract.getVehicle(vin);
+      } catch (err) {
+        console.warn(`[Event] Could not read vehicle ${vin} from chain:`, err.message);
+      }
+
       await VehicleIndex.findOneAndUpdate(
         { vin },
         {
-          vin,
-          currentOwner: owner,
-          registeredAt: new Date(Number(timestamp) * 1000),
-          lastUpdatedAt: new Date(Number(timestamp) * 1000),
-          recordCount: 0,
+          $set: {
+            vin,
+            ...(vehicle && {
+              make: vehicle.make,
+              model: vehicle.model,
+              year: Number(vehicle.year),
+            }),
+            currentOwner: owner,
+            registeredAt: new Date(Number(timestamp) * 1000),
+            lastUpdatedAt: new Date(Number(timestamp) * 1000),
+          },
+          $setOnInsert: { recordCount: 0 },
         },
-        { upsert: true, new: true }
+        { upsert: true, new: true, setDefaultsOnInsert: true }
       );
       console.log(`[DB] Upserted VehicleIndex for ${vin}`);
     } catch (err) {

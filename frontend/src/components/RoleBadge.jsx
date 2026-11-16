@@ -1,21 +1,23 @@
-const ROLE_COLORS = {
-  NONE: "#6c757d",
-  OWNER: "#28a745",
-  SERVICE_CENTER: "#007bff",
-  INSURANCE: "#fd7e14",
-  GOVERNMENT: "#6f42c1",
-  BUYER: "#17a2b8",
+const ROLE_LABELS = {
+  NONE: "No role",
+  OWNER: "Owner",
+  SERVICE_CENTER: "Service",
+  INSURANCE: "Insurance",
+  GOVERNMENT: "Government",
+  BUYER: "Buyer",
 };
 
-export default function RoleBadge({ roleName }) {
-  const color = ROLE_COLORS[roleName] || "#6c757d";
+export default function RoleBadge({ roleName = "NONE" }) {
+  const key = (roleName || "NONE").toLowerCase().replace(/_/g, "-");
+  const label = ROLE_LABELS[roleName] || roleName;
 
   return (
     <span
-      className="role-badge"
-      style={{ backgroundColor: color, color: "#fff" }}
+      className={`role-badge role-${key}`}
+      title={`Connected role: ${label}`}
     >
-      {roleName}
+      <span className="role-dot" aria-hidden="true" />
+      {label}
     </span>
   );
 }
